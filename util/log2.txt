@@ -1,0 +1,2 @@
+[ERROR][2018-12-16 21:11:21][util/logger.py:189]I'm error log
+[FATAL][2018-12-16 21:11:21][util/logger.py:190]I'm fatal log

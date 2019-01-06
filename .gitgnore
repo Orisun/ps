@@ -1,0 +1,12 @@
+.idea
+*.pyc
+.DS_Store
+*.model
+*.npy
+*.log
+*.png
+*.bin
+log/
+*.out
+vendor/
+godep/

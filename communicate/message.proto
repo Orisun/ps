@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package communicate;
+
+enum Role {
+    UNKNOWN_ROLE = 0; //首成员必须为0
+    SERVER_MANAGER = 1;
+    SERVER = 2;
+    WORKER = 3;
+}
+
+//服务器节点
+message Node {
+    int32 Index = 1; //参数服务器在Cluster.Servers中的编号
+    string Host = 2; //ip或机器名
+    bool Ready = 3; //是否处于正常工作状态
+    Role Role = 4; //机器角色
+}
+
+//key的范围
+message Range {
+    int32 Begin = 1; //包含
+    int32 End = 2; //不包含
+}
+
+//多台服务器节点
+message Nodes {
+    repeated Node Nodes = 1;
+}
+
+//Server Cluster信息
+message Cluster {
+    //下面是4个长度相同的数组，各位置的上信息一一对应
+    repeated Node Servers = 1;
+    repeated int32 RangeEnd = 2;
+    repeated Nodes Masters = 3; //一台Server有多个Master，即它是多台其他Server的备份
+    repeated Nodes Slaves = 4; //一台Server有多台备份
+}
+
+//一个Key对应的Value是一个数组
+message Value {
+    repeated double Values = 1;
+}
+
+//消息的类型
+enum Command {
+    UNKNOWN_COMMAND = 0; //首成员必须为0
+    ADD_SERVER = 1;
+    ADD_SERVER_ACK = 2;
+    INIT_SERVER = 3; //新Server加入时，把老的ServerClusterInfo和属于它的KeyRange告诉它
+    INIT_SERVER_ACK = 4;
+    DELETE_SERVER = 5;
+    DELETE_SERVER_ACK = 6;
+    KEY_RANGE_CHANGE = 7; //各server负责的KeyRange发生了变化
+    KEY_RANGE_CHANGE_ACK = 8;
+    MASTER_SLAVE_CHANGE = 9; //主从关系发生了变化
+    MASTER_SLAVE_CHANGE_ACK = 10;
+    PULL = 11; //从集群上拉取参数
+    PULL_ACK = 12;
+    PUSH = 13; //更新key对应的value，有些key可能不在本机上，还要把这个消息传递给其他server
+    PUSH_ACK = 14;
+    UPDATE = 15; //只更新某台机器上的parameter
+    UPDATE_ACK = 16;
+    INC = 17; //让上集群上的参数加一个值
+    INC_ACK = 18;
+    ADD = 19; //让某台机器上的参数加一个值
+    ADD_ACK = 20;
+    PING = 21;
+    PING_ACK = 22;
+    CHANGE_SERVER_FINISH = 23;
+    ADD_WORKER = 24;
+    SERVER_CHANGE = 25;
+}
+
+//消息
+message Message {
+    int64 Id = 1;
+    Node Sender = 2;
+    Node Receiver = 3;
+    Cluster ServerClusterInfo = 4;
+    Range KeyRange = 5;
+    repeated Value Values = 6;
+    Command Command = 7; //消息的类型
+    int64 RespondMsgId = 8; //回应哪条消息
+    bool RespondSuccess = 9; //回应执行成功或失败
+    Node DeleteNode = 10;
+}
+
+//protoc --go_out=go message.proto
+//protoc --python_out=python message.proto

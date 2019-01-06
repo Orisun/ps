@@ -1,0 +1,36 @@
+<seelog type="asynctimer" asyncinterval="5000000" minlevel="info" maxlevel="critical" metric="ps_client">
+    <exceptions>
+        <exception filepattern="except*" minlevel="error"/>
+    </exceptions>
+    <outputs formatid="all">
+        <buffered size="10000" flushperiod="1000">
+            <!-- 只保留30天的日志 -->
+            <rollingfile type="date" datepattern="20060102" maxrolls="30" filename="./log/ps_client.log"/>
+        </buffered>
+        <filter levels="error,critical">
+            <file path="./log/ps_client.error.log"/>
+        </filter>
+        <filter levels="info,warn,error,critical" formatid="flume">
+            <udp host="10.19.11.154" port="5727"/>
+        </filter>
+        <filter levels="critical" formatid="email">
+            <!-- critical级别的日志要发邮件 -->
+            <smtp senderaddress="op@taou.com"
+                  sendername="PsClient"
+                  hostname="smtp"
+                  hostport="25"
+                  username="PsClient"
+                  password="M@imaI">
+                <!-- 可以设置多个邮件接收者 -->
+                <recipient address="zhangchaoyang@taou.com"/>
+            </smtp>
+        </filter>
+    </outputs>
+    <formats>
+        <!-- 可以设置多种日志格式 -->
+        <format id="fmterror" format="[%LEVEL] [%Date %Time] [%FuncShort@%File.%Line] %Msg%n"/>
+        <format id="all" format="[%Level] [%Date %Time] [%FuncShort@%File.%Line] %Msg%n"/>
+        <format id="flume" format="[%Level] [%Date %Time] [%FuncShort@%File.%Line] %Msg%n"/>
+        <format id="email" format="[%Date %Time] [%File.%Line] %Msg%n"/>
+    </formats>
+</seelog>

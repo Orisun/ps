@@ -5,8 +5,8 @@
 from util.logger import LoggerFactory
 
 logger = LoggerFactory.getLogger()
-from communicate.python.message_pb2 import Node, Message, ADD_WORKER, PULL, PULL_ACK, PUSH, \
-    INC, Value, WORKER, SERVER_CHANGE
+from communicate.python.message_pb2 import Node, Message, ADD_WORKER, KEY_RANGE_CHANGE_ACK, PULL, PULL_ACK, PUSH, \
+    INC, Value,WORKER
 import sys
 from util.net import get_host
 from communicate.python.zmq_impl import ZMQ
@@ -80,7 +80,7 @@ class PsClient(object):
     def dealMsg(self, msg):
         if not msg:
             return
-        if msg.Command == SERVER_CHANGE:
+        if msg.Command == KEY_RANGE_CHANGE_ACK:
             self.servers = msg.ServerClusterInfo.Servers
             logger.info("server count change to {}".format(len(self.servers)))
         elif msg.Command == PULL_ACK:

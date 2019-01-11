@@ -20,14 +20,13 @@
     ```Shell
     ./start.sh -r server -p $port -m $manager_host
     ```
-3. 启动多台Client，指定工作端口port以及ServerManager的Host。
+3. 启动多台Worker。worker/go/lr_push.go（或worker/python/lr_push.py）里有demo。
 
 说明
-1. ServerManager、Servers、Clients构成一组ParameterServer，一台机器上只能部一个实例。
-2. 同一组ParameterServer内，ServerManager、Servers、Clients的工作端口需要一致。
-3. 两组ParameterServer的服务器可以存在交集，同一台服务器上的端口不要冲突就行。
+1. 训练一个模型时ServerManager、Servers、Workers要部在不同的机器上，使用相同的工作端口。
+2. 一台机器上可以部署多个ServerManager/Servers/Workers实体，用于训练多个模型。
 ## 关闭流程
-1. 关闭所有Client。
+1. 关闭所有Worker。
 2. 关闭所有Server。
     ```Shell
     ./stop.sh $port

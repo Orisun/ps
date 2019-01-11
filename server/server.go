@@ -37,7 +37,7 @@ func (self *Server) getFromLocal(KeyRange *communicate.Range) (map[int32]*commun
 		util.Log.Errorf("KeyRange is nil")
 		return data, success
 	}
-	
+
 	for key := KeyRange.Begin; key < KeyRange.End; key++ {
 		if v, err := self.parameterMap.Get(key); err == nil && v != nil {
 			values := v.(*communicate.Value)
@@ -61,12 +61,12 @@ func (self *Server) updateToLocal(KeyRange *communicate.Range, Values []*communi
 		util.Log.Errorf("key range [%d, %d) not match value length %d, will not update parameter", KeyRange.Begin, KeyRange.End, len(Values))
 		return false
 	}
-	
+
 	for key := KeyRange.Begin; key < KeyRange.End; key++ {
 		value := Values[key-KeyRange.Begin]
 		self.parameterMap.Put(key, value)
 	}
-	
+
 	//KeyRange是self.keyRange的子集，说明在更新本地的主参数（非备份参数）
 	if KeyRange.Begin >= self.keyRange.Begin && KeyRange.End <= self.keyRange.End {
 		self.updateTimes += 1
@@ -91,7 +91,7 @@ func (self *Server) addToLocal(KeyRange *communicate.Range, Deltas []*communicat
 		util.Log.Errorf("key range [%d, %d) not match value length %d, will not update parameter", KeyRange.Begin, KeyRange.End, len(Deltas))
 		return false
 	}
-	
+
 	for key := KeyRange.Begin; key < KeyRange.End; key++ {
 		delta := Deltas[key-KeyRange.Begin]
 		if v, err := self.parameterMap.Get(key); err == nil && v != nil {
@@ -106,7 +106,7 @@ func (self *Server) addToLocal(KeyRange *communicate.Range, Deltas []*communicat
 			util.Log.Errorf("no value for key %d", key)
 		}
 	}
-	
+
 	//KeyRange是self.keyRange的子集，说明在更新本地的主参数（非备份参数）
 	if KeyRange.Begin >= self.keyRange.Begin && KeyRange.End <= self.keyRange.End {
 		self.updateTimes += 1
@@ -170,6 +170,26 @@ func (self *Server) pushToSlaves() bool {
 	return success
 }
 
+//rangeOwnedByMe 命中自己的范围，或命中自己的masters的范围
+func (self *Server) rangeOwnedByMe(KeyRange *communicate.Range) bool {
+	if KeyRange.Begin >= self.keyRange.Begin && KeyRange.End <= self.keyRange.End {
+		return true
+	}
+	if self.clusterInfo.Masters != nil && len(self.clusterInfo.Masters) > 0 && self.clusterInfo.RangeEnd != nil && len(self.clusterInfo.RangeEnd) > 0 {
+		for _, master := range self.clusterInfo.Masters[self.index].Nodes {
+			var beginRange int32
+			if master.Index > 0 {
+				beginRange = self.clusterInfo.RangeEnd[master.Index-1]
+			}
+			endRange := self.clusterInfo.RangeEnd[master.Index]
+			if KeyRange.Begin >= beginRange && KeyRange.End <= endRange {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 //get 从集群中获取参数
 func (self *Server) get(KeyRange *communicate.Range) ([]*communicate.Value, bool) {
 	if KeyRange == nil {
@@ -181,10 +201,11 @@ func (self *Server) get(KeyRange *communicate.Range) ([]*communicate.Value, bool
 		util.Log.Errorf("invalid key range [%d, %d)", KeyRange.Begin, KeyRange.End)
 		return []*communicate.Value{}, false
 	}
-	
+
 	success := true
 	rect := concurrent.NewConcurrentMap()
-	if KeyRange.Begin >= self.keyRange.Begin && KeyRange.End <= self.keyRange.End {
+	//if KeyRange.Begin >= self.keyRange.Begin && KeyRange.End <= self.keyRange.End {
+	if self.rangeOwnedByMe(KeyRange) {
 		dict, ok := self.getFromLocal(KeyRange)
 		success = success && ok
 		for k, v := range dict {
@@ -220,7 +241,7 @@ func (self *Server) get(KeyRange *communicate.Range) ([]*communicate.Value, bool
 		} else {
 			target[BeginIdx] = KeyRange
 		}
-		
+
 		if len(target) > 0 {
 			wg := sync.WaitGroup{}
 			wg.Add(len(target))
@@ -248,7 +269,7 @@ func (self *Server) get(KeyRange *communicate.Range) ([]*communicate.Value, bool
 			wg.Wait()
 		}
 	}
-	
+
 	Values := make([]*communicate.Value, 0, int(KeyRange.End-KeyRange.Begin))
 	for key := KeyRange.Begin; key < KeyRange.End; key++ {
 		if v, err := rect.Get(key); err == nil && v != nil {
@@ -275,7 +296,7 @@ func (self *Server) update(KeyRange *communicate.Range, Values []*communicate.Va
 		util.Log.Errorf("key range [%d, %d) not match values count %d", KeyRange.Begin, KeyRange.End, len(Values))
 		return false
 	}
-	
+
 	success := true
 	if KeyRange.Begin >= self.keyRange.Begin && KeyRange.End <= self.keyRange.End {
 		ok := self.updateToLocal(KeyRange, Values)
@@ -311,7 +332,7 @@ func (self *Server) update(KeyRange *communicate.Range, Values []*communicate.Va
 		} else {
 			target[BeginIdx] = *KeyRange
 		}
-		
+
 		if len(target) > 0 {
 			wg := sync.WaitGroup{}
 			wg.Add(len(target))
@@ -353,7 +374,7 @@ func (self *Server) add(KeyRange *communicate.Range, Deltas []*communicate.Value
 		util.Log.Errorf("key range [%d, %d) not match values count %d", KeyRange.Begin, KeyRange.End, len(Deltas))
 		return false
 	}
-	
+
 	success := true
 	if KeyRange.Begin >= self.keyRange.Begin && KeyRange.End <= self.keyRange.End {
 		ok := self.addToLocal(KeyRange, Deltas)
@@ -389,7 +410,7 @@ func (self *Server) add(KeyRange *communicate.Range, Deltas []*communicate.Value
 		} else {
 			target[BeginIdx] = *KeyRange
 		}
-		
+
 		if len(target) > 0 {
 			wg := sync.WaitGroup{}
 			wg.Add(len(target))
@@ -430,20 +451,21 @@ func (self *Server) pull(KeyRange *communicate.Range, Server communicate.Node) (
 	} else {
 		//如果Server不ready，就从它的Slave上拉取数据。Slave可能就是自己
 		if len(self.clusterInfo.Slaves) > 0 { //Server机器数太少时len(self.clusterInfo.Slaves)=len(self.clusterInfo.Masters)=0
+			//util.Log.Debugf("slaves of %s are %v", Server.Host, self.clusterInfo.Slaves[Server.Index].Nodes)
 			for _, ele := range self.clusterInfo.Slaves[Server.Index].Nodes {
 				if ele.Ready {
 					storer = ele
 					break
 				}
 			}
-			//util.Log.Debugf("will pull data [%d, %d] from %s's slave %s", keyRange.Begin, keyRange.End, Server.Host, storer.Host)
+			util.Log.Debugf("will pull data [%d, %d] from %s's slave %s", KeyRange.Begin, KeyRange.End, Server.Host, storer.Host)
 		}
 	}
 	if storer == nil {
 		util.Log.Criticalf("server %s and its slaves are all dead, could not pull data", Server.Host)
 		return []*communicate.Value{}, false
 	}
-	
+
 	if storer.Host == self.node.Host {
 		//从自己上pull数据
 		if valueMap, ok := self.getFromLocal(KeyRange); ok {
@@ -467,8 +489,9 @@ func (self *Server) pull(KeyRange *communicate.Range, Server communicate.Node) (
 		msgId := self.van.Send(&msg)
 		ack := self.van.WaitAck(msgId, 2*time.Second)
 		if ack == nil || !ack.RespondSuccess {
-			self.van.ReSend(msgId) //只重试一次
-			ack = self.van.WaitAck(msgId, 2*time.Second)
+			if self.van.ReSend(msgId) > 0 { //只重试一次
+				ack = self.van.WaitAck(msgId, 2*time.Second)
+			}
 		}
 		if ack != nil && ack.RespondSuccess {
 			rect := make([]*communicate.Value, len(ack.Values))
@@ -504,8 +527,9 @@ func (self *Server) push(KeyRange *communicate.Range, Values []*communicate.Valu
 	msgId := self.van.Send(&msg)
 	ack := self.van.WaitAck(msgId, 2*time.Second)
 	if ack == nil || ack.RespondSuccess == false {
-		self.van.ReSend(msgId) //只重试一次
-		ack = self.van.WaitAck(msgId, 2*time.Second)
+		if self.van.ReSend(msgId) > 0 { //只重试一次
+			ack = self.van.WaitAck(msgId, 2*time.Second)
+		}
 		//util.Log.Debugf("push [%d, %d) to server %s", keyRange.Begin, keyRange.End, Server.Host)
 		if ack != nil {
 			return ack.RespondSuccess
@@ -539,8 +563,9 @@ func (self *Server) pushDelta(KeyRange *communicate.Range, Deltas []*communicate
 	msgId := self.van.Send(&msg)
 	ack := self.van.WaitAck(msgId, 2*time.Second)
 	if ack == nil || ack.RespondSuccess == false {
-		self.van.ReSend(msgId) //只重试一次
-		ack = self.van.WaitAck(msgId, 2*time.Second)
+		if self.van.ReSend(msgId) > 0 { //只重试一次
+			ack = self.van.WaitAck(msgId, 2*time.Second)
+		}
 		//util.Log.Debugf("push delta [%d, %d) to server %s", keyRange.Begin, keyRange.End, Server.Host)
 		if ack != nil {
 			return ack.RespondSuccess
@@ -557,7 +582,7 @@ func (self *Server) nodeChange(msg *communicate.Message) bool {
 	success := true
 	var oldKeyRange = self.keyRange
 	var newKeyRange communicate.Range
-	
+
 	for i, server := range msg.ServerClusterInfo.Servers {
 		if server.Host == self.node.Host {
 			self.index = server.Index
@@ -626,12 +651,12 @@ func (self *Server) nodeDead(server *communicate.Node) bool {
 //changeSlaveData 拿到最新的主从关系后，把不属于自己的数据删除掉，释放内存；然后把自己的masters的数据pull过来
 func (self *Server) changeSlaveData(msg *communicate.Message) bool {
 	success := true
-	
+
 	self.clusterInfo.Servers = msg.ServerClusterInfo.Servers
 	self.clusterInfo.Masters = msg.ServerClusterInfo.Masters
 	self.clusterInfo.Slaves = msg.ServerClusterInfo.Slaves
 	self.clusterInfo.RangeEnd = msg.ServerClusterInfo.RangeEnd
-	
+
 	//删除不属于自身KeyRange的数据
 	iter := self.parameterMap.Iterator()
 	for ; iter.HasNext(); {
@@ -643,11 +668,11 @@ func (self *Server) changeSlaveData(msg *communicate.Message) bool {
 		}
 	}
 	//util.Log.Debugf("delete data not owned by myself")
-	
+
 	//从master那儿把数据pull过来
 	ok := self.pullFromMasters()
 	success = success && ok
-	
+
 	//util.Log.Debugf("changeSlaveData %t", success)
 	return success
 }
@@ -658,7 +683,7 @@ func (self *Server) Init(manager string, port int) {
 	self.van = communicate.GetZMQInstance(port)
 	self.parameterMap = concurrent.NewConcurrentMap()
 	self.manager = manager
-	
+
 	ManagerNode := communicate.Node{Host: manager, Role: communicate.Role_SERVER_MANAGER}
 	msg := &communicate.Message{
 		Sender:   &self.node,
@@ -666,7 +691,7 @@ func (self *Server) Init(manager string, port int) {
 		Command:  communicate.Command_ADD_SERVER,
 	}
 	self.van.Send(msg)
-	
+
 	ch := make(chan os.Signal, 1)                                                       //创建管道，用于接收信号
 	signal.Notify(ch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM) //注册信号
 	go func() {
@@ -676,7 +701,7 @@ func (self *Server) Init(manager string, port int) {
 		util.Log.Flush()
 		os.Exit(0)
 	}()
-	
+
 	util.Log.Infof("server %s start, communicate on port %d", self.node.Host, port)
 }
 
@@ -684,13 +709,13 @@ func (self *Server) dealMsg(msg *communicate.Message) {
 	if msg == nil {
 		return
 	}
-	
+
 	//Ready之前，不处理来自worker的消息
 	if !self.node.Ready && msg.Sender.Role == communicate.Role_WORKER {
 		util.Log.Warnf("I am not ready, could not execute %s command from worker %s", msg.Command.String(), msg.Sender.Host)
 		return
 	}
-	
+
 	if msg.Command == communicate.Command_PULL {
 		//对方想从集群上拉取数据
 		values, success := self.get(msg.KeyRange)
@@ -770,10 +795,10 @@ func (self *Server) dealMsg(msg *communicate.Message) {
 				util.Log.Criticalf("start server failed, could not pull data")
 			}
 			respMsg := &communicate.Message{
-				Sender:   &self.node,
-				Receiver: msg.Sender,
-				Command:  communicate.Command_KEY_RANGE_CHANGE,
-				KeyRange: msg.KeyRange,
+				Sender:         &self.node,
+				Receiver:       msg.Sender,
+				Command:        communicate.Command_KEY_RANGE_CHANGE,
+				KeyRange:       msg.KeyRange,
 				RespondMsgId:   msg.Id,
 				RespondSuccess: success,
 			}
@@ -791,7 +816,7 @@ func (self *Server) dealMsg(msg *communicate.Message) {
 				RespondMsgId:   msg.Id,
 				RespondSuccess: success,
 			}
-			if !success{
+			if !success {
 				util.Log.Criticalf("pll data of my own range failed")
 			}
 			self.van.Send(respMsg)
@@ -807,9 +832,9 @@ func (self *Server) dealMsg(msg *communicate.Message) {
 				util.Log.Infof("I am ready to work")
 			}
 			respMsg := &communicate.Message{
-				Sender:   &self.node,
-				Receiver: msg.Sender,
-				Command:  communicate.Command_CHANGE_SERVER_FINISH,
+				Sender:         &self.node,
+				Receiver:       msg.Sender,
+				Command:        communicate.Command_CHANGE_SERVER_FINISH,
 				RespondMsgId:   msg.Id,
 				RespondSuccess: success,
 			}

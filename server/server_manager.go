@@ -58,6 +58,7 @@ type ChangeNodeTransaction struct {
 
 func (self *ChangeNodeTransaction) Begin(host *communicate.Node, ct ChangeNodeType) {
 	self.changeClsterLock.Lock()
+	util.Log.Debugf("get transaction lock")
 	self.changeNodeType = ct
 	self.changingNodeBegin = time.Now()
 	self.changingNode = host
@@ -67,6 +68,7 @@ func (self *ChangeNodeTransaction) Begin(host *communicate.Node, ct ChangeNodeTy
 
 func (self *ChangeNodeTransaction) End() {
 	self.changeClsterLock.Unlock()
+	util.Log.Debugf("release transaction lock")
 	self.changeNodeType = UNKNOWN
 	self.changingNode = nil
 	self.keyRangeChangeBarrier = 0
@@ -89,7 +91,7 @@ func (self *ServerManager) Init(groupName string, TotalParameterCount int32, por
 	self.changeNodeTransaction.Init()
 	self.pingWait = concurrent.NewConcurrentMap()
 	self.hasher = fnv.New32()
-	
+
 	ch := make(chan os.Signal, 1)                                                       //创建管道，用于接收信号
 	signal.Notify(ch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM) //注册信号
 	go func() {
@@ -132,7 +134,7 @@ func (self *ServerManager) calNewNodeRange(host string) (communicate.Range, bool
 //addNode 更新ClusterInfo.Servers和ClusterInfo.RangeEnd
 func (self *ServerManager) addNode(msg *communicate.Message) bool {
 	success := true
-	newNode := &communicate.Node{Host: msg.Sender.Host, Ready: true, Role: communicate.Role_SERVER}
+	newNode := &communicate.Node{Host: msg.Sender.Host, Ready: true, Role: communicate.Role_SERVER} //把新加的server置为Ready
 	newRange := msg.KeyRange
 	ServerCount := len(self.clusterInfo.Servers)
 	if ServerCount == 0 {
@@ -193,7 +195,7 @@ func (self *ServerManager) addNode(msg *communicate.Message) bool {
 	return success
 }
 
-//deleteNode 把changingNode删掉  TODO 此处有BUG
+//deleteNode 把changingNode删掉
 func (self *ServerManager) deleteNode() bool {
 	if self.changeNodeTransaction.changingNode == nil {
 		util.Log.Errorf("could not find delete node")
@@ -229,7 +231,7 @@ func (self *ServerManager) deleteNode() bool {
 		}
 		self.clusterInfo.Servers = servers
 		self.clusterInfo.RangeEnd = rangeEnds
-		
+
 		util.Log.Infof("new servers %v", self.clusterInfo.Servers)
 		util.Log.Infof("new range ends %v", self.clusterInfo.RangeEnd)
 	}
@@ -321,16 +323,18 @@ func (self *ServerManager) dealMsg(msg *communicate.Message) {
 			if success := self.addNode(msg); success {
 				//把KeyRange的变化广播出去
 				for _, peer := range self.clusterInfo.Servers {
-					respMsg := &communicate.Message{
-						Sender:            &self.node,
-						Receiver:          peer,
-						ServerClusterInfo: &self.clusterInfo,
-						Command:           communicate.Command_KEY_RANGE_CHANGE_ACK,
-						RespondSuccess:    success,
-						RespondMsgId:      msg.Id,
+					if peer.Ready {
+						respMsg := &communicate.Message{
+							Sender:            &self.node,
+							Receiver:          peer,
+							ServerClusterInfo: &self.clusterInfo,
+							Command:           communicate.Command_KEY_RANGE_CHANGE_ACK,
+							RespondSuccess:    success,
+							RespondMsgId:      msg.Id,
+						}
+						self.van.Send(respMsg)
+						self.changeNodeTransaction.keyRangeChangeBarrier++
 					}
-					self.van.Send(respMsg)
-					self.changeNodeTransaction.keyRangeChangeBarrier++
 				}
 			} else {
 				util.Log.Critical("recalculate key range failed")
@@ -342,23 +346,26 @@ func (self *ServerManager) dealMsg(msg *communicate.Message) {
 	} else if msg.Command == communicate.Command_MASTER_SLAVE_CHANGE {
 		self.changeNodeTransaction.keyRangeChangeBarrier--
 		if !msg.RespondSuccess {
-			self.van.ReSend(msg.RespondMsgId) //有任何一台server失败则让它重试
-			util.Log.Criticalf("server %s exec nodeChange faild, resend command to let it tyr again", msg.Sender.Host)
-			self.changeNodeTransaction.keyRangeChangeBarrier++
+			if self.van.ReSend(msg.RespondMsgId) > 0 { //有任何一台server失败则让它重试
+				util.Log.Criticalf("server %s exec nodeChange faild, resend command to let it try again", msg.Sender.Host)
+				self.changeNodeTransaction.keyRangeChangeBarrier++
+			}
 		} else if self.changeNodeTransaction.keyRangeChangeBarrier == 0 {
 			if success := self.updateMasterSlave(); success {
 				//把主从关系的变化广播出去
 				for _, peer := range self.clusterInfo.Servers {
-					respMsg := &communicate.Message{
-						Sender:            &self.node,
-						Receiver:          peer,
-						ServerClusterInfo: &self.clusterInfo,
-						Command:           communicate.Command_MASTER_SLAVE_CHANGE_ACK,
-						RespondSuccess:    success,
-						RespondMsgId:      msg.Id,
+					if peer.Ready {
+						respMsg := &communicate.Message{
+							Sender:            &self.node,
+							Receiver:          peer,
+							ServerClusterInfo: &self.clusterInfo,
+							Command:           communicate.Command_MASTER_SLAVE_CHANGE_ACK,
+							RespondSuccess:    success,
+							RespondMsgId:      msg.Id,
+						}
+						self.van.Send(respMsg)
+						self.changeNodeTransaction.masterSlaveChangeBarrier++
 					}
-					self.van.Send(respMsg)
-					self.changeNodeTransaction.masterSlaveChangeBarrier++
 				}
 			} else {
 				util.Log.Critical("recalculate master slave relation failed")
@@ -368,9 +375,10 @@ func (self *ServerManager) dealMsg(msg *communicate.Message) {
 	} else if msg.Command == communicate.Command_CHANGE_SERVER_FINISH {
 		self.changeNodeTransaction.masterSlaveChangeBarrier--
 		if !msg.RespondSuccess {
-			self.van.ReSend(msg.RespondMsgId) //有任何一台server失败则让它重试
-			util.Log.Criticalf("server %s exec changeSlaveData faild, resend command to let it tyr again", msg.Sender.Host)
-			self.changeNodeTransaction.keyRangeChangeBarrier++
+			if self.van.ReSend(msg.RespondMsgId) > 0 { //有任何一台server失败则让它重试
+				util.Log.Criticalf("server %s exec changeSlaveData faild, resend command to let it try again", msg.Sender.Host)
+				self.changeNodeTransaction.keyRangeChangeBarrier++
+			}
 		} else if self.changeNodeTransaction.masterSlaveChangeBarrier == 0 {
 			util.Log.Criticalf("%s server %s, use time %d milliseconds", self.changeNodeTransaction.changeNodeType.String(),
 				self.changeNodeTransaction.changingNode.Host,
@@ -390,23 +398,26 @@ func (self *ServerManager) dealMsg(msg *communicate.Message) {
 	} else if msg.Command == communicate.Command_DELETE_SERVER_ACK {
 		self.changeNodeTransaction.keyRangeChangeBarrier--
 		if !msg.RespondSuccess {
-			self.van.ReSend(msg.RespondMsgId) //有任何一台server失败则让它重试
-			util.Log.Criticalf("server %s exec nodeDead faild, resend command to let it tyr again", msg.Sender.Host)
-			self.changeNodeTransaction.keyRangeChangeBarrier++
+			if self.van.ReSend(msg.RespondMsgId) > 0 { //有任何一台server失败则让它重试
+				util.Log.Criticalf("server %s exec nodeDead faild, resend command to let it try again", msg.Sender.Host)
+				self.changeNodeTransaction.keyRangeChangeBarrier++
+			}
 		} else if self.changeNodeTransaction.keyRangeChangeBarrier == 0 {
 			if success := self.deleteNode(); success {
 				//把KeyRange的变化广播出去
 				for _, peer := range self.clusterInfo.Servers {
-					respMsg := &communicate.Message{
-						Sender:            &self.node,
-						Receiver:          peer,
-						ServerClusterInfo: &self.clusterInfo,
-						Command:           communicate.Command_KEY_RANGE_CHANGE_ACK,
-						RespondSuccess:    success,
-						RespondMsgId:      msg.Id,
+					if peer.Ready {
+						respMsg := &communicate.Message{
+							Sender:            &self.node,
+							Receiver:          peer,
+							ServerClusterInfo: &self.clusterInfo,
+							Command:           communicate.Command_KEY_RANGE_CHANGE_ACK,
+							RespondSuccess:    success,
+							RespondMsgId:      msg.Id,
+						}
+						self.van.Send(respMsg)
+						self.changeNodeTransaction.keyRangeChangeBarrier++
 					}
-					self.van.Send(respMsg)
-					self.changeNodeTransaction.keyRangeChangeBarrier++
 				}
 			} else {
 				util.Log.Critical("recalculate key range failed")
@@ -439,7 +450,7 @@ func (self *ServerManager) dealMsg(msg *communicate.Message) {
 			Sender:            &self.node,
 			Receiver:          msg.Sender,
 			ServerClusterInfo: &self.clusterInfo,
-			Command:           communicate.Command_SERVER_CHANGE,
+			Command:           communicate.Command_KEY_RANGE_CHANGE_ACK,
 			RespondSuccess:    true,
 			RespondMsgId:      msg.Id,
 		}
@@ -466,7 +477,7 @@ func (self *ServerManager) Work() {
 				wg := sync.WaitGroup{}
 				wg.Add(1)
 				self.pingWait.Put(msgId, &wg)
-				
+
 				ok := util.WaitTimeout(&wg, 500*time.Millisecond) //500毫秒没有回应，就认为本次ping对应无法回应
 				if ok {
 					pingFailCount[peer.Host] = 0
@@ -478,6 +489,7 @@ func (self *ServerManager) Work() {
 					}
 					if pingFailCount[peer.Host] >= 5 {
 						//连续超过5次ping都没响应
+						peer.Ready = false //把没有响应的server置为NotReady
 						failServer = append(failServer, peer)
 					}
 				}
@@ -488,13 +500,12 @@ func (self *ServerManager) Work() {
 					self.clusterInfo.Servers = []*communicate.Node{}
 				} else {
 					for _, peer := range failServer {
-						peer.Ready = false
-						util.Log.Debugf("server %s dead", peer.Host)
+						util.Log.Debugf("server %s dead", peer)
 						//获得锁，确保add_node和delete_node顺序进行
 						self.changeNodeTransaction.Begin(peer, DELETE)
 						//把节点已死的信息广播出去
 						for _, server := range self.clusterInfo.Servers {
-							if !data_struct.Contain(peer.Host, failServer) {
+							if server.Ready {
 								self.changeNodeTransaction.keyRangeChangeBarrier++
 								deletemsg := &communicate.Message{
 									Sender:     &self.node,
@@ -512,7 +523,7 @@ func (self *ServerManager) Work() {
 			}
 		}
 	}()
-	
+
 	for {
 		msg := self.van.PeekOneMessage()
 		go func() { //异步处理接收到的消息

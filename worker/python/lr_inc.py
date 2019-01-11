@@ -1,7 +1,7 @@
 # -*- coding:utf-8 -*-
 # Author : zhangzhaoyang
 # Date : 2018-12-12 18:22
-# Description : 用Pull-Push模式
+# Description : 用Pull-Inc模式
 
 from __future__ import division
 
@@ -28,14 +28,16 @@ from absl import app
 NEAR_0 = 1e-10
 
 FLAGS = flags.FLAGS
-flags.DEFINE_integer("port", 0, "work port")
-flags.DEFINE_string("manager", "", "manager host")
+
+flags.DEFINE_integer("port", 0, "communicate port")
+flags.DEFINE_string("manager", "", "hostname/ip of server manager")
 flags.DEFINE_integer("parameter_count", 0, "total parameter count")
 flags.DEFINE_string("corpus_file", "", "corpus file")
-flags.DEFINE_integer("corpus_split_num", 1, "corpus split count")
-flags.DEFINE_integer("corpus_split_index", 0, "read which index of corpus splits")
-flags.DEFINE_integer("feature_split_num", 1, "feature split count")
-flags.DEFINE_integer("feature_split_index", 0, "train which index of feature splits")
+flags.DEFINE_integer("corpus_split_num", 0, "corpus split count")
+flags.DEFINE_integer("corpus_split_index", 0, "use which corpus split")
+flags.DEFINE_integer("feature_split_num", 0, "feature split count")
+flags.DEFINE_integer("feature_split_index", 0, "use which feature split")
+flags.DEFINE_integer("epoch", 20, "train iteration")
 
 
 class LR(object):
@@ -80,9 +82,8 @@ def TrainLrWithGD(corpusFile, splitNum, splitIndex, epoch, batch, eta, manager, 
                   synRound):
     begin = time.time()
     lr = LR(manager, port, ParameterTotal, KeyRange, random.random, 1)
-    iter = 1
+    iter = 0
     WaitedPullMsgId = 0
-    use_time = []
     for ep in xrange(epoch):
         logger.info("epoch={}".format(ep))
         corpusGenerator = CorpusGenerator(corpusFile, splitNum, splitIndex, ParameterTotal)
@@ -99,11 +100,10 @@ def TrainLrWithGD(corpusFile, splitNum, splitIndex, epoch, batch, eta, manager, 
                 if iter % synRound == 0:
                     WaitedPullMsgId = msgId
                 iter += 1
-                t1 = time.time()
                 x = np.array(xBatch)
                 w = []
                 for value in lr.psClient.GetAllParameter():
-                    if len(value.Values)>=1:
+                    if len(value.Values) >= 1:
                         w.append(value.Values[0])
                     else:
                         logger.error("parameters of one key less than 2: {}".format(len(value.Values)))
@@ -111,19 +111,15 @@ def TrainLrWithGD(corpusFile, splitNum, splitIndex, epoch, batch, eta, manager, 
                 y_hat = lr.fn(w, x)
                 y = np.array(yBatch).reshape(len(yBatch), 1)
                 g = lr.grad(y, y_hat, x[:, KeyRange.Begin:KeyRange.End])  # 只需要计算部分梯度
-                w[KeyRange.Begin:KeyRange.End] -= eta * g  # 梯度下降法的核心公式，只更新自己负责的区间段
+                delta_w = -eta * g  # 梯度下降法的核心公式，只更新自己负责的区间段
                 Values = []
-                for i in xrange(KeyRange.Begin, KeyRange.End):
+                for i in xrange(g.shape[0]):
                     value = Value()
-                    value.Values.append(w[i])
+                    value.Values.append(delta_w[i])
                     Values.append(value)
-                t2 = time.time()
-                use_time.append(t2 - t1)
-                lr.psClient.UpdateLocalRangedParameter(Values)
-                lr.psClient.Push()
+                lr.psClient.Inc(Values)
                 xBatch = []
                 yBatch = []
-        logger.debug("update paramter {} times, mean use time {}".format(len(use_time), np.mean(np.array(use_time))))
         if len(xBatch) > 0:
             if WaitedPullMsgId > 0:
                 if not lr.psClient.WaitPull(WaitedPullMsgId, 1):  # 等之前的Pull命令完成
@@ -135,7 +131,7 @@ def TrainLrWithGD(corpusFile, splitNum, splitIndex, epoch, batch, eta, manager, 
             x = np.array(xBatch)
             w = []
             for value in lr.psClient.GetAllParameter():
-                if len(value.Values)>=1:
+                if len(value.Values) >= 1:
                     w.append(value.Values[0])
                 else:
                     logger.error("parameters of one key less than 2: {}".format(len(value.Values)))
@@ -143,14 +139,13 @@ def TrainLrWithGD(corpusFile, splitNum, splitIndex, epoch, batch, eta, manager, 
             y_hat = lr.fn(w, x)
             y = np.array(yBatch).reshape(len(yBatch), 1)
             g = lr.grad(y, y_hat, x[:, KeyRange.Begin:KeyRange.End])  # 只需要计算部分梯度
-            w[KeyRange.Begin:KeyRange.End] -= eta * g  # 梯度下降法的核心公式，只更新自己负责的区间段
+            delta_w = -eta * g  # 梯度下降法的核心公式，只更新自己负责的区间段
             Values = []
-            for i in xrange(KeyRange.Begin, KeyRange.End):
+            for i in xrange(g.shape[0]):
                 value = Value()
-                value.Values.append(w[i])
+                value.Values.append(delta_w[i])
                 Values.append(value)
-            lr.psClient.UpdateLocalRangedParameter(Values)
-            lr.psClient.Push()
+            lr.psClient.Inc(Values)
 
     logger.info("train lr with gd finished, use {} seconds".format(time.time() - begin))
     return lr
@@ -163,10 +158,9 @@ def init_zero():
 def TrainLrWithFTRL(corpusFile, splitNum, splitIndex, epoch, batch, manager, port, ParameterTotal, KeyRange,
                     alpha, beta, l1, l2, synRound):
     begin = time.time()
-    lr = LR(manager, port, ParameterTotal, KeyRange, init_zero, 2)#TRL中的z和n初始化为0，注意n一定不能是负数
-    iter = 1
+    lr = LR(manager, port, ParameterTotal, KeyRange, init_zero, 2)  # TRL中的z和n初始化为0，注意n一定不能是负数
+    iter = 0
     WaitedPullMsgId = 0
-    use_time = []
     for ep in xrange(epoch):
         logger.info("epoch={}".format(ep))
         corpusGenerator = CorpusGenerator(corpusFile, splitNum, splitIndex, ParameterTotal)
@@ -183,7 +177,6 @@ def TrainLrWithFTRL(corpusFile, splitNum, splitIndex, epoch, batch, manager, por
                 if iter % synRound == 0:
                     WaitedPullMsgId = msgId
                 iter += 1
-                t1 = time.time()
                 x = np.array(xBatch)
                 z = []
                 n = []
@@ -206,21 +199,16 @@ def TrainLrWithFTRL(corpusFile, splitNum, splitIndex, epoch, batch, manager, por
                 # print "g", g[0:min(10, g.shape[0])]
                 sigma = (np.sqrt(n[KeyRange.Begin:KeyRange.End] + g * g) - np.sqrt(
                     n[KeyRange.Begin:KeyRange.End])) / alpha
-                z[KeyRange.Begin:KeyRange.End] += g - sigma * w[KeyRange.Begin:KeyRange.End]  # 只更新自己负责的区间段
-                # print "z after", z[KeyRange.Begin:min(KeyRange.Begin + 10, KeyRange.End)]
-                n[KeyRange.Begin:KeyRange.End] += g * g  # 只更新自己负责的区间段
+                delta_z = g - sigma * w[KeyRange.Begin:KeyRange.End]  # 只更新自己负责的区间段
+                delta_n = g * g  # 只更新自己负责的区间段
                 Values = []
-                for i in xrange(KeyRange.Begin, KeyRange.End):
+                for i in xrange(g.shape[0]):
                     value = Value()
-                    value.Values.extend([z[i], n[i]])
+                    value.Values.extend([delta_z[i], delta_n[i]])
                     Values.append(value)
-                t2 = time.time()
-                use_time.append(t2 - t1)
-                lr.psClient.UpdateLocalRangedParameter(Values)
-                lr.psClient.Push()
+                lr.psClient.Inc(Values)
                 xBatch = []
                 yBatch = []
-        logger.debug("update paramter {} times, mean use time {}".format(len(use_time), np.mean(np.array(use_time))))
         if len(xBatch) > 0:
             if WaitedPullMsgId > 0:
                 if not lr.psClient.WaitPull(WaitedPullMsgId, 1):  # 等之前的Pull命令完成
@@ -248,15 +236,14 @@ def TrainLrWithFTRL(corpusFile, splitNum, splitIndex, epoch, batch, manager, por
             y = np.array(yBatch).reshape(len(yBatch), 1)
             g = lr.grad(y, y_hat, x[:, KeyRange.Begin:KeyRange.End])  # 只需要计算部分梯度
             sigma = (np.sqrt(n[KeyRange.Begin:KeyRange.End] + g * g) - np.sqrt(n[KeyRange.Begin:KeyRange.End])) / alpha
-            z[KeyRange.Begin:KeyRange.End] += g - sigma * w[KeyRange.Begin:KeyRange.End]  # 只更新自己负责的区间段
-            n[KeyRange.Begin:KeyRange.End] += g * g  # 只更新自己负责的区间段
+            delta_z = g - sigma * w[KeyRange.Begin:KeyRange.End]  # 只更新自己负责的区间段
+            delta_n = g * g  # 只更新自己负责的区间段
             Values = []
-            for i in xrange(KeyRange.Begin, KeyRange.End):
+            for i in xrange(g.shape[0]):
                 value = Value()
-                value.Values.extend([z[i], n[i]])
+                value.Values.extend([delta_z[i], delta_n[i]])
                 Values.append(value)
-            lr.psClient.UpdateLocalRangedParameter(Values)
-            lr.psClient.Push()
+            lr.psClient.Inc(Values)
 
     logger.info("train lr with ftrl finished, use {} seconds".format(time.time() - begin))
     return lr
@@ -280,16 +267,13 @@ def PreditByLR(lr, corpusFile, splitNum, splitIndex, alpha, beta, l1, l2):
             z.append(value.Values[0])
             n.append(value.Values[1])
     if len(z) > 0:
-        logger.debug("model is trained by ftrl")
         z = np.array(z)
         n = np.array(n)
-        # 根据n和z计算得到w
+        # FTRL核心公式
         w = np.array(
             [0 if np.abs(z[i]) <= l1 else (np.sign(z[i]) * l1 - z[i]) / (l2 + (beta + np.sqrt(n[i])) / alpha)
              for i in xrange(len(z))])
-
     else:
-        logger.debug("model is trained by gd")
         w = np.array(w)
     for X, Y in corpusGenerator:
         x = np.array(X).reshape(1, len(X))
@@ -308,10 +292,10 @@ def main(argv):
     manager = FLAGS.manager
     parameterCount = FLAGS.parameter_count
     corpusFile = FLAGS.corpus_file
-    corpusSplitNum = FLAGS.corpus_split_num
-    corpusSplitIndex = FLAGS.corpus_split_index
     featureSplitNum = FLAGS.feature_split_num
     featreSplitIndex = FLAGS.feature_split_index
+    corpusSplitNum = FLAGS.corpus_split_num
+    corpusSplitIndex = FLAGS.corpus_split_index
     epoch = FLAGS.epoch
 
     print("work port ", port)
@@ -350,5 +334,4 @@ def main(argv):
 if __name__ == "__main__":
     app.run(main)
 
-# python example/python/lr.py --port 40010 --manager jobflume --parameter_count 10000 --corpus_file
-# example/data/binary_class.csv --corpus_split_num 3 --corpus_split_index 0 --feature_split_num 3 --feature_split_index 0 --epoch 20
+# python worker/python/lr_inc.py --port 40010 --manager jobflume --parameter_count 10000 --corpus_file example/data/binary_class.csv --epoch 20 --feature_split_num 1 --feature_split_index 0  --corpus_split_num 3 --corpus_split_index 0

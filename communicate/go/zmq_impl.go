@@ -30,6 +30,8 @@ type ZMQ struct {
 	waitedMsgCache inmem.Cache
 	msgChannel     chan Message
 	receiveWait    inmem.Cache //等待ack时，每一个等待对应一个WaitGroup
+
+	closed bool
 }
 
 //GetZMQInstance 单例
@@ -54,6 +56,7 @@ func GetZMQInstance(port int) *ZMQ {
 				receiveWait:    receiveWait,
 				waitedMsgCache: ackCache,
 				msgChannel:     make(chan Message, msgKeepCount), //通道已满时再add就会阻塞
+				closed:         false,
 			}
 
 			zmq.receive() //另起一个协程，开始接收消息
@@ -85,11 +88,12 @@ func (self *ZMQ) Send(msg *Message) int64 {
 	return msg.Id
 }
 
-//ReSend
+//ReSend 重发。如果还能从缓存里找到msgId对应的消息体，则返回msgId；否则返回0
 func (self *ZMQ) ReSend(msgId int64) int64 {
 	if v, exists := self.sendHistory.Get(msgId); exists {
 		msg := v.(*Message)
-		return self.Send(msg)
+		self.Send(msg)
+		return msgId
 	} else {
 		util.Log.Errorf("ask resend message %d, but not cache it", msgId)
 		return 0
@@ -107,33 +111,35 @@ func (self *ZMQ) receive() {
 				self.Close()
 				break
 			default:
-				if request, err := self.receiveSocket.RecvMessageBytes(0); err == nil {
-					var msg Message
-					if err := proto.Unmarshal(request[1], &msg); err == nil {
-						if msg.Command != Command_PING_ACK && msg.Command != Command_PING {
-							util.Log.Debugf("receive command %s from %s", msg.Command.String(), msg.Sender.Host)
-						}
-						if msg.RespondMsgId > 0 {
-							//util.Log.Debugf("msg %d got ack", msg.RespondMsgId)
-							self.waitedMsgCache.Add(msg.RespondMsgId, &msg, time.Now().Add(ackKeepTime))
-							if v, exists := self.receiveWait.Get(msg.RespondMsgId); exists {
-								wg := v.(*sync.WaitGroup)
-								wg.Done()
-								//util.Log.Debugf("msg %d wait through", msg.RespondMsgId)
-							} else {
-								//有2种情况程序会走到这里：
-								//1. msg从waitedMsgCache中溢出
-								//2. server manager广播的一些消息，在本server中找不到对应的原消息
+				if !self.closed {
+					if request, err := self.receiveSocket.RecvMessageBytes(0); err == nil {
+						var msg Message
+						if err := proto.Unmarshal(request[1], &msg); err == nil {
+							if msg.Command != Command_PING_ACK && msg.Command != Command_PING {
+								util.Log.Debugf("receive command %s from %s", msg.Command.String(), msg.Sender.Host)
 							}
+							if msg.RespondMsgId > 0 {
+								//util.Log.Debugf("msg %d got ack", msg.RespondMsgId)
+								self.waitedMsgCache.Add(msg.RespondMsgId, &msg, time.Now().Add(ackKeepTime))
+								if v, exists := self.receiveWait.Get(msg.RespondMsgId); exists {
+									wg := v.(*sync.WaitGroup)
+									wg.Done()
+									//util.Log.Debugf("msg %d wait through", msg.RespondMsgId)
+								} else {
+									//有2种情况程序会走到这里：
+									//1. msg从waitedMsgCache中溢出
+									//2. server manager广播的一些消息，在本server中找不到对应的原消息
+								}
+							}
+							self.msgChannel <- msg
+						} else {
+							util.Log.Errorf("unmarshal message failed")
 						}
-						self.msgChannel <- msg
 					} else {
-						util.Log.Errorf("unmarshal message failed")
-					}
-				} else {
-					util.Log.Errorf("socket receive error:%v", err)
-					if zmq4.AsErrno(err) == zmq4.Errno(syscall.EINTR) {
-						break
+						util.Log.Errorf("socket receive error:%v", err)
+						if zmq4.AsErrno(err) == zmq4.Errno(syscall.EINTR) {
+							break
+						}
 					}
 				}
 			}
@@ -174,6 +180,7 @@ func (self *ZMQ) PeekOneMessage() *Message {
 }
 
 func (self *ZMQ) Close() {
+	self.closed = true
 	if self.receiveSocket != nil {
 		self.receiveSocket.Close()
 	}

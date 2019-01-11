@@ -311,6 +311,5 @@ func main() {
 	util.Log.Flush()
 }
 
-//读1/3的样本，训练1/3的参数，所以至少需要9个worker
-//go clean && go build -o lr && ./lr --port 40010 --manager jobflume --parameter_count 10000 --corpus_file ..
-// /data/binary_class.csv --corpus_split_num 3 --corpus_split_index 0 --feature_split_num 3 --feature_split_index 0 --epoch 20
+//读1/3的样本，训练全部的参数
+//go clean && go build -o lr && ./lr --port 40010 --manager jobflume --parameter_count 10000 --corpus_file ../data/binary_class.csv  --epoch 20 --feature_split_num 1 --feature_split_index 0 --corpus_split_num 3 --corpus_split_index 0

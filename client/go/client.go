@@ -264,7 +264,7 @@ func (self *PsClient) dealMsg(msg *communicate.Message) {
 	if msg == nil {
 		return
 	}
-	if msg.Command == communicate.Command_SERVER_CHANGE {
+	if msg.Command == communicate.Command_KEY_RANGE_CHANGE_ACK {
 		self.servers = msg.ServerClusterInfo.Servers
 		util.Log.Infof("server count change to %d", len(self.servers))
 	} else if msg.Command == communicate.Command_PULL_ACK {

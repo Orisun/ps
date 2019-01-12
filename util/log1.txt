@@ -1,5 +1,0 @@
-[DEBUG][2018-12-16 21:11:21][util/logger.py:178]I'm debug log
-[INFO][2018-12-16 21:11:21][util/logger.py:179]I'm info log
-[WARN][2018-12-16 21:11:21][util/logger.py:180]I'm warn log
-[ERROR][2018-12-16 21:11:21][util/logger.py:181]I'm error log
-[FATAL][2018-12-16 21:11:21][util/logger.py:182]I'm fatal log

@@ -13,24 +13,11 @@
         <filter levels="info,warn,error,critical"  formatid="flume">
             <udp host="10.19.11.154" port="5727"/>
         </filter>
-        <filter levels="critical" formatid="email">
-            <!-- critical级别的日志要发邮件 -->
-            <smtp senderaddress="op@taou.com"
-                  sendername="ParameterServer"
-                  hostname="smtp"
-                  hostport="25"
-                  username="ParameterServer"
-                  password="M@imaI">
-                <!-- 可以设置多个邮件接收者 -->
-                <recipient address="zhangchaoyang@taou.com"/>
-            </smtp>
-        </filter>
     </outputs>
     <formats>
         <!-- 可以设置多种日志格式 -->
         <format id="fmterror" format="[%LEVEL] [%Date %Time] [%FuncShort@%File.%Line] %Msg%n"/>
         <format id="all" format="[%Level] [%Date %Time] [%FuncShort@%File.%Line] %Msg%n"/>
         <format id="flume" format="[%Level] [%Date %Time] [%FuncShort@%File.%Line] %Msg%n"/>
-        <format id="email" format="[%Date %Time] [%File.%Line] %Msg%n"/>
     </formats>
 </seelog>

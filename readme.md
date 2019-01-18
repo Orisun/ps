@@ -37,4 +37,4 @@
     ./stop.sh $port
     ```
 ## 并行效率
-[go版测试](example/go/readme.md)
+[go版测试](https://github.com/Orisun/ps/blob/master/worker/go/readme.md)

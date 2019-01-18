@@ -36,3 +36,5 @@
     ```Shell
     ./stop.sh $port
     ```
+## 并行效率
+[go版测试](example/go/readme.md)
